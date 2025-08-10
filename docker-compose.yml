@@ -1,0 +1,13 @@
+version: "3.9"
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # You can override here too
+      - DATABASE_URL=sqlite:/app/data/bot.db
+    volumes:
+      - bot_data:/app/data
+volumes:
+  bot_data:
