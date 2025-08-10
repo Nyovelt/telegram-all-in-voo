@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use dotenvy::dotenv;
 use regex::Regex;
 use std::env;
@@ -14,7 +14,7 @@ use db::Db;
     /start - register or show your UUID\n\
     /save {amount} [reason] - save money with optional reason\n\
     /adjust {+/-amount} [reason] - adjust balance with optional reason\n\
-    /allinvoo - show total saved (your 'VOO' pile)\n\
+    /allinvoo - invest current stash and reset current to 0 (moves to history)\n\
     /query [n] - list your last n entries (default 10)\n\
     /help - this help"
 )]
@@ -49,6 +49,19 @@ async fn main() -> Result<()> {
                 if let Ok(cmd) = Command::parse(text, &bot_name) {
                     if let Err(err) = handle_command(bot.clone(), &db, &msg, cmd).await {
                         eprintln!("handle_command error: {err:?}");
+                    }
+                } else {
+                    // Inline completion hints for /save and /adjust when typing
+                    if text.starts_with("/save ") || text.starts_with("/adjust ") {
+                        let hint = "Format: /save 12.34 [reason] or /adjust -5.50 [reason]";
+                        if let Err(err) = bot
+                            .send_message(msg.chat.id, hint)
+                            .reply_to_message_id(msg.id)
+                            .send()
+                            .await
+                        {
+                            eprintln!("hint send error: {err:?}");
+                        }
                     }
                 }
             }
@@ -150,21 +163,34 @@ async fn handle_command(bot: Bot, db: &Db, msg: &Message, cmd: Command) -> Resul
             }
         }
         Command::Allinvoo => {
-            let total = db.total_cents(uuid).await?;
-            bot.send_message(
-                msg.chat.id,
-                format!(
-                    "Your notional VOO stash: {}.{}\n(Every /save adds to this total 🚀)",
-                    cents_to_major(total),
-                    cents_to_minor(total)
-                ),
-            )
-            .await?;
+            let current = db.total_cents(uuid).await?;
+            if current == 0 {
+                bot.send_message(
+                    msg.chat.id,
+                    "Nothing to invest yet. Your current total is 0.",
+                )
+                .await?;
+            } else {
+                let moved = db.archive_user_entries(uuid).await?;
+                let history = db.history_total_cents(uuid).await?;
+                bot.send_message(
+                    msg.chat.id,
+                    format!(
+                        "Invested {}.{} into VOO (moved to history).\nCurrent now: 0.00\nHistory total: {}.{}",
+                        cents_to_major(moved),
+                        cents_to_minor(moved),
+                        cents_to_major(history),
+                        cents_to_minor(history),
+                    ),
+                )
+                .await?;
+            }
         }
         Command::Query(args) => {
             let n = args.trim().parse::<i64>().unwrap_or(10).clamp(1, 50);
             let items = db.last_entries(uuid, n).await?;
-            let total = db.total_cents(uuid).await?;
+            let current_total = db.total_cents(uuid).await?;
+            let history_total = db.history_total_cents(uuid).await?;
             if items.is_empty() {
                 bot.send_message(msg.chat.id, "No entries yet. Use /save to start!")
                     .await?;
@@ -194,9 +220,13 @@ async fn handle_command(bot: Bot, db: &Db, msg: &Message, cmd: Command) -> Resul
                     ));
                 }
                 lines.push(format!(
-                    "\nTotal: {}.{}",
-                    cents_to_major(total),
-                    cents_to_minor(total)
+                    "\nCurrent total: {}.{}\nHistory total: {}.{}\nGrand total: {}.{}",
+                    cents_to_major(current_total),
+                    cents_to_minor(current_total),
+                    cents_to_major(history_total),
+                    cents_to_minor(history_total),
+                    cents_to_major(current_total + history_total),
+                    cents_to_minor(current_total + history_total),
                 ));
                 bot.send_message(msg.chat.id, lines.join("\n")).await?;
             }

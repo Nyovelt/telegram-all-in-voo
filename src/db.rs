@@ -61,7 +61,19 @@ impl Db {
           FOREIGN KEY(user_id) REFERENCES users(id)
         );
 
+        CREATE TABLE IF NOT EXISTS entries_history(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          amount_cents INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          reason TEXT,
+          created_at TEXT NOT NULL,
+          archived_at TEXT NOT NULL,
+          FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_entries_user ON entries(user_id);
+        CREATE INDEX IF NOT EXISTS idx_entries_history_user ON entries_history(user_id);
         "#;
 
         sqlx::query(schema).execute(&self.0).await?;
@@ -139,6 +151,55 @@ impl Db {
         .await?;
         let total: i64 = row.get("total");
         Ok(total)
+    }
+
+    pub async fn history_total_cents(&self, user_id: Uuid) -> Result<i64> {
+        let row = sqlx::query(
+            "SELECT COALESCE(SUM(amount_cents),0) AS total FROM entries_history WHERE user_id = ?",
+        )
+        .bind(user_id.to_string())
+        .fetch_one(&self.0)
+        .await?;
+        let total: i64 = row.get("total");
+        Ok(total)
+    }
+
+    pub async fn archive_user_entries(&self, user_id: Uuid) -> Result<i64> {
+        let mut tx = self.0.begin().await?;
+        let current_total: i64 = sqlx::query(
+            "SELECT COALESCE(SUM(amount_cents),0) AS total FROM entries WHERE user_id = ?",
+        )
+        .bind(user_id.to_string())
+        .fetch_one(&mut *tx)
+        .await?
+        .get("total");
+
+        if current_total == 0 {
+            tx.commit().await?;
+            return Ok(0);
+        }
+
+        let now = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_else(|_| "now".into());
+
+        sqlx::query(
+            "INSERT INTO entries_history(user_id, amount_cents, kind, reason, created_at, archived_at)
+             SELECT user_id, amount_cents, kind, reason, created_at, ?
+             FROM entries WHERE user_id = ?",
+        )
+        .bind(now)
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query("DELETE FROM entries WHERE user_id = ?")
+            .bind(user_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(current_total)
     }
 
     pub async fn last_entries(&self, user_id: Uuid, limit: i64) -> Result<Vec<Entry>> {
