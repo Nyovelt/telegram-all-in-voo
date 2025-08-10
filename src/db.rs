@@ -1,6 +1,8 @@
 use anyhow::Result;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use std::{fs, path::Path, str::FromStr};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -17,7 +19,20 @@ pub struct Entry {
 
 impl Db {
     pub async fn new(database_url: &str) -> Result<Self> {
-        let pool = SqlitePool::connect(database_url).await?;
+        // If it's a SQLite file path, ensure its parent directory exists
+        if let Some(path) = sqlite_path_from_url(database_url) {
+            if path != ":memory:" {
+                if let Some(parent) = Path::new(&path).parent() {
+                    if !parent.as_os_str().is_empty() {
+                        fs::create_dir_all(parent)?;
+                    }
+                }
+            }
+        }
+
+        // Create DB file if missing
+        let opts = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
+        let pool = SqlitePoolOptions::new().connect_with(opts).await?;
         let db = Self(pool);
         db.init().await?;
         Ok(db)
@@ -149,4 +164,19 @@ impl Db {
             })
             .collect())
     }
+}
+
+fn sqlite_path_from_url(url: &str) -> Option<String> {
+    if !url.starts_with("sqlite:") {
+        return None;
+    }
+    // Accept both sqlite:PATH and sqlite://PATH
+    let path = if let Some(rest) = url.strip_prefix("sqlite://") {
+        rest
+    } else if let Some(rest) = url.strip_prefix("sqlite:") {
+        rest
+    } else {
+        url
+    };
+    Some(path.to_string())
 }
