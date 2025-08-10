@@ -1,5 +1,7 @@
 # telegram-all-in-voo
 
+[![Telegram @AllinvooBot](https://img.shields.io/badge/Telegram-@AllinvooBot-26A5E4?logo=telegram&logoColor=white)](https://t.me/AllinvooBot)
+
 A tiny Telegram bot that helps you “not spend it, save it” — every time you resist a purchase, `/save 12.50 coffee` adds to your personal stash. Think of it as your notional VOO pile. Works in groups (per‑person tracking) and persists to SQLite.
 
 ## Features
